@@ -1,0 +1,56 @@
+---
+title: "Lab4"
+author: "Siqi Fu, Yunran Chen, Lingxi Song"
+date: "2019/10/21"
+output: pdf_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r pkgs and read data}
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(corrplot)
+library(tidyr)
+
+badger=read.table("/Users/songlingxi/Desktop/BadgersFarmSurveysNoNA.txt",header = TRUE)
+colnames(badger)=str_to_lower(colnames(badger))
+
+badger=badger%>%
+  mutate(farm=as.factor(farm_code_numeric))
+```
+
+#### Introduction
+Management of badgers on Welsh and British farms triggers heated debate. Therefore, our aim of this project is to figure out factors related to the badger activity as well as to give estimates of farm-specific heterogeneity on badger activities. We have data from the surveys of 36 farms over three years and each farm is observed up to 8 seasons, which gives 273 observations altogether with predictor *year*,*season*,*no_active_setts_in_fields*,*accessible_feed_store_present*,*various types of crops*.etc and the primary outcome *signs_in_yard*. We will builed a Generalized Linear Mixed Effects Model for this topic because by intuition, we assume there is natural heterogeneity across different farms. 
+
+
+#### EDA
+```{r correlation, fig.cap="\\label{fig:cor} correlation summary plot",fig.width=5.5,fig.height=4}
+badger_num = badger[,5:21]
+corrplot(cor(badger_num),type = "upper",method = "ellipse", tl.cex = 0.4)
+```
+
+```{r fig.cap="\\label{fig:EDAnum} EDA for potenetial Variables",fig.width=5,fig.height=3.5}
+# ggplot(badger %>% mutate(signs_in_yard=as.factor(signs_in_yard)), aes(no_active_setts_in_fields,no_buildings, color = signs_in_yard))+
+#   geom_jitter() +
+#   ggtitle("no_setts_in_fields vs. no_active_setts_in_fields, by color = signs_in_yard") +
+#   theme_light()
+ggplot(badger %>% select(signs_in_yard,no_active_setts_in_fields,no_setts_in_fields,no_buildings) %>% 
+                  gather(key = "variables",value = "value",-signs_in_yard),
+       aes(value,signs_in_yard))+geom_jitter()+ facet_wrap(~variables, scale = "free")+
+   labs(title = "EDA for number of setts and buildings")+theme_bw()
+```
+
+```{r fig.cap="\\label{fig:EDAdummy} EDA for potenetial dummy variables"}
+ggplot(badger %>% select(signs_in_yard,accessible_feed_store_present,accessible_cattle_house_present,
+                         accessible_feed_present,grass_silage,cereal_silage,haystraw,
+                         cereal_grains,concentrates,proteinblocks,sugarbeet,vegetables,molasses) %>% 
+                  gather(key = "variables",value = "value",-signs_in_yard),
+       aes(value,signs_in_yard))+geom_jitter()+ facet_wrap(~variables, scale = "free")+
+   labs(title = "EDA for potential variables")+theme_bw()
+```
+

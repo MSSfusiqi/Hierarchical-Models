@@ -1,0 +1,291 @@
+---
+title: "Lab4"
+author: "Siqi Fu, Yunran Chen, Lingxi Song"
+date: "2019/10/21"
+output: pdf_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r pkgs and read data}
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(corrplot)
+library(tidyr)
+badger=read.table("Badgers.txt",header = TRUE)
+colnames(badger)=str_to_lower(colnames(badger))
+badger=badger%>%
+  mutate(farm=as.factor(farm_code_numeric))
+```
+
+#### Introduction
+Management of badgers on Welsh and British farms triggers heated debate. Therefore, our aim of this project is to figure out factors related to the badger activity as well as to give estimates of farm-specific heterogeneity on badger activities. We have data from the surveys of 36 farms over three years and each farm is observed up to 8 seasons, which gives 273 observations altogether with predictor *year*,*season*,*no_active_setts_in_fields*,*accessible_feed_store_present*,*various types of crops*.etc and the primary outcome *signs_in_yard*. We will builed a Generalized Linear Mixed Effects Model for this topic because by intuition, we assume there is natural heterogeneity across different farms. 
+
+
+#### EDA
+```{r correlation, fig.cap="\\label{fig:cor} correlation summary plot",fig.width=5.5,fig.height=4}
+badger_num = badger[,5:21]
+corrplot(cor(badger_num),type = "upper",method = "ellipse", tl.cex = 0.4)
+```
+
+```{r fig.cap="\\label{fig:EDAnum} EDA for potenetial Variables",fig.width=5,fig.height=3.5}
+# ggplot(badger %>% mutate(signs_in_yard=as.factor(signs_in_yard)), aes(no_active_setts_in_fields,no_buildings, color = signs_in_yard))+
+#   geom_jitter() +
+#   ggtitle("no_setts_in_fields vs. no_active_setts_in_fields, by color = signs_in_yard") +
+#   theme_light()
+ggplot(badger %>% select(signs_in_yard,no_active_setts_in_fields,no_setts_in_fields,no_buildings) %>% 
+                  gather(key = "variables",value = "value",-signs_in_yard),
+       aes(value,signs_in_yard))+geom_jitter()+ facet_wrap(~variables, scale = "free")+
+   labs(title = "EDA for number of setts and buildings")+theme_bw()
+```
+
+```{r fig.cap="\\label{fig:EDAdummy} EDA for potenetial dummy variables"}
+ggplot(badger %>% select(signs_in_yard,accessible_feed_store_present,accessible_cattle_house_present,
+                         accessible_feed_present,grass_silage,cereal_silage,haystraw,
+                         cereal_grains,concentrates,proteinblocks,sugarbeet,vegetables,molasses) %>% 
+                  gather(key = "variables",value = "value",-signs_in_yard),
+       aes(value,signs_in_yard))+geom_jitter()+ facet_wrap(~variables, scale = "free")+
+   labs(title = "EDA for potential variables")+theme_bw()
+```
+
+## Modeling
+
+```{r,model}
+m1=glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+```
+
+```{r,diag for no_setts_in_fields}
+m01 = glmer(signs_in_yard ~  no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+p1 = anova(m01,m1)[2,8]
+p1
+
+```
+
+```{r, no_active_setts_in_fields}
+m02 = glmer(signs_in_yard ~ no_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+p2 = anova(m02,m1)[2,8]
+p2
+```
+
+```{r, no_buildings}
+m03 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+        + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0)
+anova(m03,m1)[2,8]
+```
+
+```{r, no_cattle_in_buidlings_yard}
+m04 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings  
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m04,m1)[2,8]
+```
+
+```{r,accessible_feed_store_present}
+m05 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m1,m05)[2,8]
+```
+
+```{r, accessible_cattle_house_present}
+m06=glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+        + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0)
+anova(m1,m06)[2,8]
+```
+
+```{r, accessible_feed_present}
+m07 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present           
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m1,m07)[2,8]
+```
+
+```{r, grass_silage}
+m08 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+        + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m1,m08)[2,8]
+```
+```{r, cereal_silage}
+m09 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m09,m1)[2,8]
+```
+```{r,haystraw}
+m10 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+        + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage  + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0)
+anova(m10,m1)[2,8]
+```
+```{r, cereal_grains}
+m11 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+        + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw  +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0)
+anova(m11,m1)[2,8]
+```
+```{r, concentrates}
+m12=glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains  + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m12,m1)[2,8]
+```
+
+```{r, proteinblocks}
+m13 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0)
+anova(m13,m1)[2,8]
+```
+
+```{r, sugarbeet}
+m14 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks   + vegetables + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m14,m1)[2,8]
+```
+
+```{r, vegetables}
+m15=glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet  + molasses   
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0)
+anova(m15,m1)[2,8]
+```
+```{r, molasses}
+m16=glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables    
+         +  (1|farm_code_numeric) + (season|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m16,m1)[2,8]
+```
+
+```{r,farm_code}
+m17 = glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+          + (season|year),
+         family=binomial,data=badger,nAGQ=0)
+anova(m1,m17)[2,8]
+```
+
+```{r,season}
+m18=glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) + (1|year),
+         family=binomial,data=badger,nAGQ=0) 
+anova(m18,m1)[2,8]
+```
+
+```{r,year}
+m19=glmer(signs_in_yard ~ no_setts_in_fields+ no_active_setts_in_fields 
+         +  no_buildings + no_cattle_in_buidlings_yard 
+         + accessible_feed_store_present 
+         + accessible_cattle_house_present + accessible_feed_present          
+         + grass_silage + cereal_silage + haystraw + cereal_grains +
+           concentrates + proteinblocks  + sugarbeet + vegetables + molasses   
+         +  (1|farm_code_numeric) ,
+         family=binomial,data=badger,nAGQ=0) 
+anova(m1,m19)[2,8]
+```
+

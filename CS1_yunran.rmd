@@ -1,0 +1,346 @@
+---
+title: "Case Study 1"
+author: "Group 5: Lingxi Song, Siqi Fu, Yunran Chen"
+date: "9/30/2019"
+output: pdf_document
+fontsize: "11pt"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r pkg,message=FALSE,warning=FALSE}
+load("streetrx.rdata")
+library("dplyr")
+library("ggplot2")
+library("broom")
+library("stringr")
+library("tidyverse")
+library("maps")
+library("stringr")
+```
+
+确定删一些数据（不合理数据:把unknow state删了；把=0删了；）--- 纳入哪些变量，具体模型形式（log;交互项；random effect）--- Bayesian hierachical model vs linear mixed effect model --- inference -- evaluate model --- conclusion （关注哪些有意思的结论）
+
+Lingxi: EDA 可以探究哪些变量会影响y。探究一下是否纳入交互项。size-mean 画一个图支持hierarchical。
+
+Siqi: 模型探究：根据EDA或者自己的ITUITION先全部纳入看看显不显著（BIC;系数的检验；LRT）+ residual plot
+
+有没有啥shrinkage方法？
+Q:9类可以合成一类
+Schedule:下周末前做完。
+#### Data Preparation and Visualization
+
+There are three practical problems in the raw dataset. (1) Missing values. (2) Several extreme values. (3) Many hospital ownership categories but lack of sample size within some categories, such as `individual`, `partnership` and `other proprietary`. In the data preparation process, we only keep the hostipotals without missing values. Since we assume normal distribution on the netincome of hospitals in each state, we remove the outliers which are 1.5*IQR (interquartile range) above the 75% quantile and below 25% quantile. To ensure enough sample size within each hospital owenership categories to obtain better estimation and inference, we merge the hospital ownership to four categories: `Corporation`, `Gvmt`, `Nonprofit` and `IPP` (`individual`, `partnership` and `other proprietary`).
+
+
+1956 records all in USA
+
+```{r data, include=FALSE,warning=FALSE}
+gaba%>%filter(state=="USA")
+
+gaba%>%group_by(state)%>%summarise(M=mean(ppm))
+gaba=streetrx%>%
+  filter(api_temp=="gabapentin",ppm>0)%>%
+  filter(!is.na(ppm))%>%
+  dplyr::select(-api_temp,-country,-form_temp)
+gaba
+gaba%>%group_by(Primary_Reason)%>%summarise(n=n())
+ggplot(data=gaba,aes(x=log(ppm),fill=bulk_purchase))+
+  geom_density(alpha=0.5)+
+  theme_bw()
+
+ggplot(data=gaba,aes(x=log(ppm),fill=Primary_Reason))+
+  geom_density(alpha=0.5)+
+  facet_grid(Primary_Reason~.)+
+  theme_bw()
+
+ggplot(data=gaba,aes(x=log(ppm),fill=USA_region))+
+  geom_density(alpha=0.5)+
+  facet_grid(USA_region~.)+
+  theme_bw()
+
+gaba=gaba%>%mutate(region=as.character(state)%>%str_to_lower(.))
+gaba_s=gaba%>%group_by(region)%>%summarise(ms=mean(log(ppm)))
+us_states <- map_data("state")
+maps_s=left_join(x=us_states,y=gaba_s)
+p <- ggplot(data = maps_s,
+            aes(x = long, y = lat,
+                group = group, fill = ms))
+p + geom_polygon(color="gray90")
+#get rid of the outliers based on 1.5 IQR outside quantilies 
+hc2014_clean=hc2014na%>%group_by(state)%>%
+  filter(!netincome %in% boxplot.stats(netincome)$out)
+#merge the categories in control 
+hc2014_data=hc2014_clean%>%ungroup()%>%
+  mutate(control1=hc2014_clean%>%pull(control)%>%as.character()%>%str_split(.,"-",simplify = TRUE)%>%.[,1]%>%as.factor())
+hc2014_data=hc2014_data%>%ungroup()%>%mutate(control1=if_else(as.character(control1)%in%c("Individual","Partnership","Other Proprietary"),"IPP",as.character(control1)))
+```
+
+
+From the visualization, the data presents three features: (1) Similarity across states. We can see a overlapping range of netincome. (2) Uneven sample size within each state. State `MP` and `GU` have only a few records. Notice we aim to rank the state and do not want to exclude any state in our analysis. So we consider borrow information from other states instead of removing the state with only a few observations. (3) Heterogeneity across mean and variance of netincome of hospitals within each state. (4)Extreme values appear mostly when sample size is small. (5)Number of beds and hostpital ownership types both influence netincome of a hospital.
+
+Based on the aforementioned features of the dataset, we build a Bayesian hierachical model with different group mean and heterogeneous variance, and control the number of beds and hospital ownerships.
+
+
+```{r, eda,fig.height=3}
+#par(mfrow=c(2,2))
+hc2014_data1=hc2014_data
+ggplot(data = hc2014_data1,mapping = aes(x=state,y=netincome,color=state))+
+  geom_boxplot() + theme_bw() + theme(legend.position="none", axis.text.x = element_text(angle = 90, hjust = 1))+ggtitle("Boxplot of netincome of 55 states")+theme(text = element_text(size=8))
+mean_size=hc2014_data%>%group_by(state,control1)%>%summarize(n=n(),y_bar=mean(netincome))
+ggplot(data = mean_size,mapping = aes(x=n,y=y_bar,color=control1))+geom_point() + theme_bw() + xlab("Sample Size") + ylab("Mean Netincome") + scale_color_discrete(name = "Hospital Ownership")+ggtitle("Relation between sample size and group mean across different hospital owenership")+theme(text = element_text(size=8))
+
+ggplot(hc2014_data,aes(x=state,y=netincome))+geom_boxplot()+facet_wrap(~control1) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1),text = element_text(size=8))+ggtitle("Comparison of netincome across different ownerships")
+ggplot(hc2014_data,aes(x=log(numbeds),y=netincome,color=state))+geom_point(alpha=0.7)+facet_wrap(~control1) + theme_bw() + theme()+ ggtitle("Relation between netincome and number of beds across different hostpital ownership")+theme(text = element_text(size=8))
+```
+
+#### Model specification
+
+Due to EDA, we consider a hierachical model as follows:
+
+For state $j\in\{1,...,m\}$, each hospital $i\in\{1,...,n_j\}$, we consider a regression:
+$$Y_{i,j}=\beta_{0,j}+\beta_{1,j}x_{i,1,j}+\beta_{2,j}x_{i,2,j}+\beta_{3,j}x_{i,3,j}+\beta_{4,j}x_{i,4,j}+\epsilon_{i,j}$$
+
+where subscript $j$ refers to state $j$, $x_{i,1,j}=I(\text{hospital}~i~\text{is}~\text{Gvmt})$, $x_{i,2,j}=I(\text{hospital}~i~\text{is}~\text{IPP})$, $x_{i,3,j}=I(\text{hospital}~i~\text{is}~\text{Nonprofit})$,
+$x_{i,4,j}=log(\text{number of beds})$. Notice the intercept indicates the netincome of hospital $i$ belonging to `Corporation` ownership in state $j$ since we set `Corporation` category as reference level.
+
+We rewrite the fomular using matrix form $Y_j=X_j\beta_j+\epsilon_j$. We assume different potential effects for different states: $\beta_j\sim MVN(\beta_0,\Sigma_0)$. We assume different variance for different states: $\epsilon_j\sim MVN(0,\sigma_j^2I)$, $1/\sigma_j^2\sim Ga(\nu_0/2,\nu_0\sigma_0^2/2)$. We consider weakly informative priors, where $\beta_0=0,\Sigma_0=10I,\nu_0=1,\sigma_0^2=1000$. Notice, we rescale the netincome by dividing $10^6$ to faciliate the prior specification, and scale it back when making inference.
+
+#### Estimation
+
+We derive a Gibbs sampling as follows: 
+
+Step1: Updating $\beta_j,~j\in\{1,...,m\}$ , $\beta_j|- \sim MVN((\Sigma_0^{-1}+(X_j^TX_j)/\sigma_j^2)^{-1}(\Sigma_0^{-1}\beta_0+X_j^TY_j/\sigma_j^2),(\Sigma_0^{-1}+(X_j^TX_j)/\sigma_j^2)^{-1})$.
+
+Step2: Updating $\sigma_j^2,~j\in\{1,...,m\}$, $1/\sigma_j^2|- \sim Ga((\nu_0+n_j)/2,(\nu_0\sigma_0^2+(Y_j-X_j\beta_j)^T(Y_j-X_j\beta_j))/2)$
+
+We use the estimator of fix effect ANOVA model as start values of our sampling scheme.
+
+```{r gibbs, cache=TRUE, include=FALSE}
+## Data
+hc2014_data=hc2014_data%>%arrange(state)
+hc2014_data=hc2014_data%>%mutate(netincome=netincome/1000000)
+Y=cbind(y=hc2014_data$netincome,state=hc2014_data$state)
+X=model.matrix(data=hc2014_data,netincome~control1+log(numbeds))
+m=(Y[,2])%>%unique()%>%length()
+n=table(Y[,2])%>%as.vector()
+ind=rep(1:m,n)
+colnames(X)=NULL
+Y=cbind(y=hc2014_data$netincome,state=ind)
+
+
+
+## MCMC setup
+set.seed(1)
+S=10000
+BETA=array(dim=c(5,m,S))
+SIGMA2i=matrix(nrow=m,ncol=S)
+
+## starting values
+lm1=lm(data = hc2014_data,formula = netincome~control1+log(numbeds))%>%summary()
+BETA[,,1]=sapply(1:m,function(x){lm1%>%tidy()%>%pull(estimate)})
+sds=hc2014_data%>%group_by(state)%>%summarise(sd=sd(netincome))%>%pull(sd)
+inds_n1=is.na(sds)
+sds[is.na(sds)]=mean(sds,na.rm = TRUE)
+SIGMA2i[,1]=1/(sds^2)
+## Weakly informative priors
+S0i=diag(rep(1/10,5))
+BETA0=rep(0,5)
+nu0=1
+s20=1000
+
+
+## MCMC algorithm
+Ys=lapply(1:m,function(x){
+  Y[ind==x,1]
+})
+Xs=lapply(1:m,function(x){
+  if (sum(ind==x)==1) {
+    X_=X[ind==x,]%>%t()
+  }else{X_=X[ind==x,]}
+  return(X_)
+})
+
+XX=lapply(1:m,function(x){
+  xx=t(Xs[[x]])%*%Xs[[x]]
+  return(xx)
+})
+
+XY=lapply(1:m, function(x){
+  xy=t(Xs[[x]])%*%Ys[[x]]
+  return(xy)
+})
+
+S0BETA0=S0i%*%as.matrix(BETA0)
+
+for (s in 2:S){
+  BETA[,,s]=sapply(1:m,function(x){
+    SIGMA_=solve(S0i+XX[[x]]*SIGMA2i[x,s-1])
+    MU_=SIGMA_%*%(S0BETA0+XY[[x]]*SIGMA2i[x,s-1])
+    mvrnorm(n=1,mu=MU_,Sigma = SIGMA_)
+  },simplify = TRUE)
+  SIGMA2i[,s]=sapply(1:m,function(x){
+    rgamma(1,0.5*(nu0+n[x]),0.5*(nu0*s20+t(Ys[[x]]-Xs[[x]]%*%BETA[,,s])%*%(Ys[[x]]-Xs[[x]]%*%BETA[,,s])))
+  },simplify = TRUE)
+  SIGMA2i[inds_n1,s]=rep(1/mean(1/SIGMA2i[!inds_n1,s]),sum(inds_n1))
+}
+
+
+```
+
+
+#### Inference 
+
+We run 10000 iteration with first 2000 burnin. We consider posterior mean as the estimator and present the estimators of each state in the following figure. The estimators of netincome are more centered and less noisy compared to the raw data. Based on the values, we can rank each state.
+
+```{r,res,cache=TRUE,fig.height=3}
+burn=2000
+BETA_burn=BETA[,,(burn+1):S]
+SIGMA2i_burn=SIGMA2i[,(burn+1):S]
+##Obtain Theta=Xbeta 
+
+Xb=sapply(1:(S-burn),function(x){
+  lapply(1:m,function(mi){
+    Xs[[mi]]%*%BETA_burn[,mi,x]
+  })%>%unlist()
+},simplify = TRUE)
+Y_pred=sapply(1:(S-burn),function(x){
+  lapply(1:m,function(mi){
+    MU=Xs[[mi]]%*%BETA_burn[,mi,x]
+    sd_y=sqrt(1/SIGMA2i_burn[mi,x])
+    map_dbl(MU,~rnorm(n=1,mean=.x,sd=sd_y))
+  })%>%unlist()
+},simplify = TRUE)
+
+
+theta_tbl=tibble(state=rep(hc2014_data%>%pull(state)%>%unique()%>%sort(),n),Theta=apply(Xb,1,mean),Y_true=hc2014_data%>%pull(netincome),Y_pred=apply(Y_pred,1,mean))%>%gather(.,type,netincome,-state)
+
+ggplot(data = theta_tbl%>%filter(type=="Theta"),mapping = aes(x=state,y=netincome,color=state))+
+  geom_boxplot() + theme_bw() + theme(legend.position="none", axis.text.x = element_text(angle = 90, hjust = 1))+ggtitle("Mean netincome estimator (posterior mean) of each hostpital in 55 states")+theme(text = element_text(size=8))
+
+#ggplot(data = theta_tbl%>%filter(type=="Y_pred"),mapping = aes(x=state,y=netincome,color=state))+
+#  geom_boxplot() + theme_bw() + theme(legend.position="none", axis.text.x = element_text(angle = 90, hjust = 1))
+
+#ggplot(data = theta_tbl%>%filter(type=="Y_true"),mapping = aes(x=state,y=netincome,color=state))+
+#  geom_boxplot() + theme_bw() + theme(legend.position="none", axis.text.x = element_text(angle = 90, hjust = 1))
+
+#ggplot(data = theta_tbl,mapping = aes(x=state,y=netincome,color=state))+
+#  geom_boxplot() + theme_bw() + theme(legend.position="none", axis.text.x = element_text(angle = 90, hjust = 1)) + facet_grid(type~.)
+
+#mean_size2=theta_tbl%>%group_by(state)%>%summarize(n=n(),y_bar=mean(netincome_mean))
+#mean_size2=mean_size2%>%mutate(y=hc2014_data%>%group_by(state)%>%summarise(y=mean(netincome*1000000))%>%pull(y))%>%mutate(diff=y-y_bar)
+#ggplot(data = mean_size2%>%filter(n>5),mapping = aes(x=n,y=diff))+geom_point() + theme_bw() + 
+#  xlab("Sample Size") + ylab("Mean Netincome") 
+
+```
+
+Here we present the credible interval of parameter estimation to explore the relationship between the netincome and hospital ownership and number of beds. 
+
+The following table shows posterior mean and 95% credible intervals of $\beta_0$,$\beta_1$,$\beta_2$,$\beta_3$ and $\beta_4$ for selected state (North Carolina and its neighbors: Georgia, South Carolina, and Virginia). We can see credible interval of coefficients of each state overlap, showing similarity across states. Increasing number of beds bring more netincome on average. And compared to `Corporation` ownership, hostpitals of other ownerships mostly earn less at different degree for different states and different ownership (also there are some exceptions, such as nonprofit hospital in VA ).
+
+
+Here we take North Carolina as an example to interpret these parameters. Notice that we did log tranformation to `number of beds` and divided `netincome` by 1e6, we should return those variables to the original scale when interpreting. The 95% confidence interval of $\beta_4$ is $[-0.47,2.1]$, indicating we are 95% confident that for NC state, increasing number of beds by 1%, the netincome of hostpital will increase [-4676.7 20895.7] dollars ($[-0.47,2.1]\times log(1.01)\times 10^6$) holding other condition as constant. 
+ 
+```{r, include=FALSE}
+state_name = hc2014_data$state %>% unique() %>%sort()
+beta_quan=apply(BETA_burn,c(1,2),quantile,c(0.025,0.5,0.975))
+beta_mean=apply(BETA_burn,c(1,2),mean)
+coef_table=NULL
+for (i in 1:length(BETA0)){
+  coef = cbind(beta_mean [i,]%>%round(.,digits = 2),
+           paste0("[",beta_quan [1,i,]%>%round(.,digits = 2),",",beta_quan [3,i,]%>%round(.,digits = 2),"]"))
+  coef_table = cbind(coef_table,coef)
+}
+
+rownames(coef_table)=state_name
+colnames(coef_table)=c('$\\beta_{0}$','CI of $\\beta_{0}$',
+                       '$\\beta_{1}$','CI of $\\beta_{1}$',
+                       '$\\beta_{2}$','CI of $\\beta_{2}$',
+                       '$\\beta_{3}$','CI of $\\beta_{3}$',
+                       '$\\beta_{4}$','CI of $\\beta_{4}$')
+
+#pick up 4 states and scale back
+coef_table4=coef_table[rownames(coef_table) %in% c("NC","SC","VA","GA"), ] 
+```
+
+```{r draw the table of CI, echo=FALSE}
+knitr::kable(coef_table4,digits = 2,
+             caption ="Inference of Coefficients for selected states")
+```
+
+We rank the state based on the median netincome estimator (posterior mean) of each state. Here we only present top 5 states, with the median, 2.5% quantile and 97.5% quantile of netincome estimator of each state.
+
+```{r rank}
+ranks=theta_tbl%>%filter(type=="Theta")%>%
+  group_by(state)%>%
+  summarise(median_inc=median(netincome)*1000000,q_lower=quantile(netincome,0.025)*1000000,q_upper=quantile(netincome,0.975)*1000000)%>%
+  arrange(desc(median_inc))%>%slice(1:5)
+colnames(ranks)=c("state","median","2.5% quantile","97.5% quantile")
+knitr::kable(ranks,caption = "First five state with highest netincome (with posterior mean as estimator)")
+```
+
+
+#### Model evaluation 
+
+Almost all effective sample sizes of all parameters are above 5000 showing a good mixing. We also check lag-k autocorrelations between the MCMC samples. Based on our plot with selected parameters, the autocorrelation drops with increasing k (or “lag”, the x-axis in the plot), and mostly decrease to around 0 with k around 3, which is a good sign.
+
+```{r effsize, fig.height=3, warning=FALSE, include=FALSE}
+s_size=apply(SIGMA2i_burn,1,function(x){effectiveSize(as.mcmc(x))})
+beta_size=apply(array(BETA_burn,dim = c(55*5,S-burn)),1,function(x){effectiveSize(as.mcmc(x))})
+eff_size=tibble(eff_size=c(s_size,beta_size))
+#ggplot(eff_size,aes(x=eff_size))+geom_histogram()+theme_bw()+xlab("Effective Sample Size")+ ggtitle("Histgram of Effective Sample Size")
+```
+
+```{r,fig.height=3,warning=FALSE}
+par(mfrow=c(1,3))
+acf(SIGMA2i_burn[1,])
+acf(SIGMA2i_burn[2,])
+acf(SIGMA2i_burn[3,])
+
+par(mfrow = c(1,3))
+acf(BETA[1,1,])
+acf(BETA[2,2,])
+acf(BETA[3,3,])
+```
+
+We also consider a posterior check. We consider a MC p-value to see the probability of the obeserved data are more extreme values in our posterior samples. The following histgram shows most p-values are greater than 0.05, indicating our model fits the data well.
+
+```{r echo=FALSE, fig.height=2.5, message=FALSE, warning=FALSE}
+Y_real = hc2014_data$netincome
+P_value = rep(0,length(Y_real))
+for (i in 1:length(Y_real)){
+  P_value[i] = min(mean(Y_pred[i,] < Y_real[i]),mean(Y_pred[i,] > Y_real[i]))
+
+}
+ptibble=tibble(p_value=P_value)
+ggplot(ptibble,aes(x=p_value))+geom_histogram()+geom_vline(xintercept = 0.05)+theme_bw()+ggtitle("Posterior check")+theme(text = element_text(size=8))
+install.packages("rethinking")
+library(devtools)
+install_github("rmcelreath/rethinking")
+library(rethinking)
+library(ggplot2)
+library(tibble)
+library(dplyr)
+```
+
+```{r}
+
+R4 <- rlkjcorr(1e4,K=2,eta=4)
+R1 <- rlkjcorr(1e4,K=2,eta=1)
+R_1 <- rlkjcorr(1e4,K=2,eta=0.1)
+
+data=tibble(y=c(R4[,1,2],R1[,1,2],R_1[,1,2]),eta=rep(c(4,1,0.1),each=1e4)%>%as.factor())
+ggplot(data,aes(x=y,fill=eta))+geom_density(alpha=0.4)+theme_bw()
+
+R4 <- rlkjcorr(1e4,K=3,eta=4)
+R1 <- rlkjcorr(1e4,K=3,eta=1)
+R_1 <- rlkjcorr(1e4,K=3,eta=0.1)
+dim(R4)
+data=tibble(y=c(R4[,1,3],R1[,1,3],R_1[,1,3]),eta=rep(c(4,1,0.1),each=1e4)%>%as.factor())
+ggplot(data,aes(x=y,fill=eta))+geom_density(alpha=0.4)+theme_bw()
+
+```
+

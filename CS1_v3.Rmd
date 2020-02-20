@@ -1,0 +1,372 @@
+---
+title: "Gabbies on Streets Sensitive to Supply and Demand-- Data Analysis on Street Price of Gabapentin"
+author: "Siqi Fu, Yunran Chen, Lingxi Song"
+date: "10/10/2019"
+output: pdf_document
+header-includes:
+ \usepackage{float}
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE,message = FALSE,fig.pos = 'H')
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(nlme)
+library(lattice)
+library(lme4)
+library(Matrix)
+library(ggplot2)
+library(lubridate)
+library("brms")
+library(statebins)
+library(nlme)
+library(gridExtra)
+library(merTools)
+```
+
+
+
+```{r, include=FALSE,cache=TRUE,warning = FALSE,message = FALSE}
+load("streetrx.RData")
+```
+
+#### Introduction
+
+Gabapentin is a medication used to treat certain types of seizures and nerve pain. It is first approved for use by FDA in 1993 and has been approved as a generic medication in the USA on *September 23th, 2014*. This drug is ranked 4th most popular prescribed medication in the United States, according to GoodRx\footnote{Official website of GoodRx: <https://www.goodrx.com/drug-guide>}. The euphoric effects of Gabapentin make it also popular on the streets under the name "Gabbies". Various survey shows it is increasingly being abused and misused for recreation (getting high)\footnote{Information of Gabapentin comes from wikipedia page: <https://en.wikipedia.org/wiki/Gabapentin>}.
+
+We are interested in the fluctuation of price (price per mg) for Gabapentin on streets. Specifically, we are interested in exploring which factors have potential effect on price; how do these factors take effects; whether there are regional variances of the price; whether a time trend or a seasonal effect exists; whether a policy take effects on the price; etc. Our exploration on these questions suggests the price is influenced by the policy and dosage strength significantly (with p-value less than 0.005\footnote{We consider the p-value threshold to be 0.005 as suggested by an article in nature: Benjamin D J, Berger J O, Johannesson M, et al. Redefine statistical significance[J]. Nature Human Behaviour, 2018, 2(1): 6. }), and is not influenced by the time, region, bulk purchase, source and primary reason for purchase. This results are well explained by the supply and demand theory (See Conclusion section for further details).
+
+
+We build a mixed effect model on a dataset from website StreetRx\footnote{<https://streetrx.com/>}, which includes 1578 self-reported street price (per mg) records by anaonymous users from 2013/02/16 to 2019/3/30 in the United States. Other potential predictors are provided on the dataset, including the date of purchace, location of purchase (state, region), source of information, dosage strength in mg of the units purchased, whether it is a bulk purchase, and the reason for purchase.\footnote{See the Appendix for the distribution of each predictor and data preprocess procedure.}
+
+
+#### Exploratory Data Analysis
+
+```{r data cleaning, include=FALSE,cache=TRUE,warning = FALSE,message = FALSE}
+gaba_=streetrx%>%
+  filter(api_temp=="gabapentin",ppm>0)%>%
+  filter(!is.na(ppm))%>%
+  dplyr::select(-api_temp,-country,-form_temp,-city) %>% 
+  filter(state!="USA") %>% 
+  mutate(Primary_Reason=as.character(Primary_Reason))%>%
+  mutate(Primary_Reason = ifelse(Primary_Reason=="",
+                                  "0",str_extract(Primary_Reason,"(\\d)+")))%>%
+  filter(!Primary_Reason==11)%>%
+  mutate(Primary_Reason=as.factor(Primary_Reason))%>%
+  mutate(source = ifelse(source=="",
+                         "Not specified",as.character(source))) %>% 
+  mutate(source = ifelse(source %in% c("Usatoday.com","Reddit.com","Reddit","Quora"),
+                               "Internet",source)) %>% 
+  mutate(state=state.abb[match(state,state.name)]) %>% 
+  mutate(logppm = log(ppm))
+
+# deal with outliers
+gaba_clean = gaba_ %>% filter(logppm < mean(gaba_$logppm)+3.5*sd(gaba_$logppm)&
+                                   logppm > mean(gaba_$logppm)-3.5*sd(gaba_$logppm)) 
+```
+
+
+We consider logarithm transformation for price per mg (ppm) as our repsonse variable, since the price is positive and the logarithm ppm follows normal distribution approximately. Figure \ref{fig:dateind2} shows the trend of `logppm` over time (by quarters). The third quarter of 2014 acts as a special time point. A significant drop of price happens at this quarter, and the price remains relatively stable at a relative lower level since then. No significant seasonal effect is shown. We marked 7 outliers (3.5 standard deviation from the mean) which do not show some special patterns with respect to state and other predictors. Figure \ref{fig:stateregion} suggests there is a heterogeneity across states, but there seems no heterogeneity across four USA regions. Figure \ref{fig:statebin} further indicates there is no significant correlation across states geographically. The dosage strength in mg of the units purchased seems to pose a nonlinear effect on the price (see Figure \ref{fig:mgstr}). As the dosage strength increase (except for 350 point), the price decrease and the decrease rate slower down. See Figure \ref{fig:noeffect} in the Appendix for the summary of other predictors without significant effect on the price.
+
+Exploratory data analysis suggests including an indicator for purchase date after the third quarter of 2014, which indicates whether policy that Gabapentine can be considered as a generic medication in the United States takes effects. The results also suggests considering nonlinear effect of dosage strength, and a heterogeneity of states in our model. Figure \ref{fig:samplesize} suggests states with less sample size tends to have more variance, indicating a hierachical model is needed to allow for borrowing information across states\footnote{Labelled data are 2 standard deviation away from the total mean}.
+
+```{r EDA of raw data, message=FALSE,fig.cap="\\label{fig:dateind} price drop on 2014Q3",fig.width=4,fig.height=4}
+gaba_eda = gaba_ %>%
+  mutate(price_date=as.character(price_date)%>%mdy(.),
+         yq_pdate=yq_pdate%>%as.factor(),mgstr=as.factor(mgstr))%>%
+  mutate(outlier=(logppm > mean(gaba_$logppm)+3.5*sd(gaba_$logppm))|
+                                   (logppm < mean(gaba_$logppm)-3.5*sd(gaba_$logppm)))
+
+# ggplot(gaba_eda%>%
+#   mutate(outlier=as.factor(outlier)),aes(x = price_date, y = logppm))+geom_point(aes(color=outlier))+ 
+#   geom_smooth()+theme_bw()+
+#   geom_vline(xintercept = mdy("09/23/2014"))+
+#   geom_text(aes(x=mdy("09/23/2014"), label="generic medication", y=-7.3), colour="black",angle=90, vjust = 1.2,hjust=1)+
+#   geom_text(aes(label=ifelse(as.character(outlier),state,''),vjust=1.2))+
+#   scale_color_manual(breaks = c("TRUE","FALSE"),
+#                         values=c("black", "red"))
+```
+
+```{r, message=FALSE,fig.cap="\\label{fig:dateind2} Price Drop on 2014Q3",fig.width=4.5,fig.height=4}
+ggplot(gaba_eda,aes(x = yq_pdate, y = logppm))+geom_boxplot()+ 
+  geom_smooth()+theme_bw()+
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  geom_vline(xintercept = 6.5)+
+  #geom_text(aes(x=6.5, label="generic medication", y=-7), colour="black",angle=90, vjust = 1.2,hjust=1)+
+  geom_text(aes(label=ifelse(as.character(outlier),state,''),vjust=1.2,hjust=1),alpha=0.7)+
+  geom_point(data=gaba_eda%>%filter(as.character(outlier)%>%as.logical()),color="red")+xlab("Year and Quarter of Purchase Date")
+```
+
+```{r message=FALSE,fig.cap="\\label{fig:stateregion} Average logppm per State (colored by USA_region)",fig.width=5.5,fig.height=4}
+state_order=gaba_eda %>% dplyr::select(USA_region,state)%>%distinct()%>%arrange(USA_region)%>%pull(state)
+ggplot(gaba_eda,aes(x = state, y = logppm,fill=USA_region))+geom_boxplot()+ 
+theme_bw()+
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  scale_x_discrete(limits=state_order)
+```
+
+```{r, message=FALSE,fig.cap="\\label{fig:statebin} Average logppm per State Geographically"}
+gaba_state = gaba_eda %>% group_by(state) %>% 
+  summarise(count = n(), logppm_mean = mean(logppm),region=mean(USA_region%>%as.numeric()))
+statebins_continuous(state_data = gaba_state, state_col = "state",
+                     text_color = "white", value_col = "logppm_mean",
+                     brewer_pal="Blues", font_size = 3,
+                     legend_title="average ppm")
+```
+
+```{r message=FALSE,fig.cap="\\label{fig:mgstr} EDA for dosage strength (mgstr)",fig.width=4.5,fig.height=3}
+gaba_eda=gaba_eda%>%mutate(mgstr=mgstr%>%as.factor())
+ggplot(gaba_eda,aes(x = mgstr, y = logppm))+geom_boxplot()+ 
+theme_bw()
+```
+
+
+
+```{r message=FALSE,fig.cap="\\label{fig:samplesize} Sample Size vs Average logppm per State",fig.width=4.5,fig.height=4}
+ggplot(gaba_clean %>% group_by(state) %>% 
+         summarise(samplesize=n(),sample_average = mean(logppm))%>%
+         mutate(outlier=(sample_average>mean(sample_average)+2*sd(sample_average))|(sample_average<mean(sample_average)-2*sd(sample_average))),
+       aes(x=samplesize,y=sample_average))+geom_point()+
+  theme_bw()+
+  geom_text(aes(label=ifelse(as.character(outlier),state,''),vjust=1.2))
+```
+
+
+#### Model
+
+Based on the insights from exploratory data analysis, we include state as a random effect, and include both purchase time and dosage strength into our model. Then we conduct variable selection and compare different models based on likelihood ratio test with p-value threshold 0.005 and BIC.
+
+The main challenge is how to incorperate time effect and the dosage strength since they both show nonlinear effect on the price. For the time effect, we compare three possible predictor: purchase date, year and quarter of purchase date, the indicator of purchase date greater than 2014/09/23 (the date when policy takes effect nationalwide), and indicator of purchase date greater than the third quarter of 2014 (the year and quarter when when policy takes effect nationalwide). For the first two continuous predictors, we compare spline and polynomial transformation. For the dosage strength effect, we compare include it as a continuous variable and as a categorical variable. For the continuous dosage strength effect, we compare logarithm, spline and polynomial transformation. We compare the aformentioned models based on likelihood ratio test (LRT), BIC criterion, residual plot and QQ-plot. *The best model includes the logarithm of dosage strength (`log(mgstr)`) and the indicator of purchase date greater than the third quarter of 2014 (referred as `I(policy)` thereafter).*
+
+To explore whether others factors have potential effects on the price, we consider a full model with logarithm of dosage strength (`log(mgstr)`), the indicator of policy (`I(policy)`) and include all other potential predictors such as USA region, source, bulk purchase, primary reason. We conduct LRT and check BIC for each predictor to check whether including it will bring significant difference to the model. For the potential predictors with multiple categories, we also test whether different ways to merge the categories will bring better model performance. Table 1 shows the result of the LRT and BIC. *Based on the testing result, we conclude that other predictors execpt for the dosage strength and policy do not bring significant effect nor improve the fitting performance of model.* This conclusion is consistent with results from exploratory data analysis.
+
+Based on aforementioned model comparison, the best model includes logarithm of dosage strength (`log(mgstr)`), policy effective date (`I(policy)`) and a random effect for states. We further check whether an interaction is needed between `log(mgstr)` and `I(policy)`; and if they are significant, whether an random effect is needed for `log(mgstr)` and `I(policy)` across states. We consider LRT and BIC for model comparison. Table 1 suggests *there is no interaction and random effects of `log(mgstr)` and `I(policy)` needed.*
+
+Our best performance model is as follows:
+
+$$log(ppm)_{ij}=\beta_0+b_{0j}+\beta_1I(policy)_{ij}+log(mgstr)_{ij}+\epsilon_{ij}$$
+
+where $i$ refer to individual record $i$, $j$ refer to the state $j$. $I(policy)$ indicates purchase date after the second quarter of 2014, $log(mgstr)$ represents the logarithm of dosage strength in mg of the units purchased. We assume $\epsilon_{ij} \sim N(0,\sigma^2)$(i.i.d), $b_{0j} \sim N(0,\tau^2)$(i.i.d) and $\epsilon_{ij}$ is independent of $b_{0j}$ for any $i$, $j$.
+
+
+```{r, best model, message=FALSE, warning=FALSE}
+gaba_model1=gaba_eda%>%mutate(yqpt=as.numeric(as.character(yq_pdate))>20142,yq=yq_pdate%>%as.factor()%>%as.numeric())%>%
+  mutate(mgstr_c=as.character(mgstr)%>%as.numeric())
+gaba_model=gaba_eda%>%mutate(yqpt=as.numeric(as.character(yq_pdate))>20142,yq=yq_pdate%>%as.factor()%>%as.numeric())%>%
+  mutate(mgstr_c=as.character(mgstr)%>%as.numeric())%>%filter(!outlier)
+set.seed(1)
+m_n1=lmer(logppm~1+yqpt+log(mgstr_c)+(1|state),data=gaba_model) #best
+b0=BIC(m_n1)
+```
+
+
+```{r,table1,warning=FALSE}
+m2=lmer(logppm ~ source+log(mgstr_c)+bulk_purchase+Primary_Reason+ yqpt + USA_region + (1|state),data=gaba_model)
+bfull=BIC(m2)
+m_n1=lmer(logppm~1+yqpt+log(mgstr_c)+(1|state),data=gaba_model) #best
+#check for USA region
+ma = lmer(logppm ~ source+log(mgstr_c)+bulk_purchase+Primary_Reason+ yqpt + (1|state), data= gaba_model)
+p1 = anova(ma,m2)[2,8]
+df1 = anova(ma,m2)[2,7]
+b1 = BIC(ma)
+#check for source
+mb = lmer(logppm ~ log(mgstr_c)+bulk_purchase+Primary_Reason+ yqpt + USA_region + (1|state),data=gaba_model)
+p2 = anova(m2,mb)[2,8]
+df2 = anova(m2,mb)[2,7]
+b2 = BIC(mb)
+# check for bulk purchase
+mc = lmer(logppm ~ source+log(mgstr_c)+Primary_Reason+ yqpt + USA_region + (1|state),data=gaba_model)
+p3 = anova(m2,mc)[2,8]
+df3 = anova(m2,mc)[2,7]
+b3 = BIC(mb)
+#
+md = lmer(logppm ~ source+log(mgstr_c)+bulk_purchase+Primary_Reason + USA_region + (1|state),data=gaba_model)
+p4 = anova(m2,md)[2,8]
+df4 = anova(m2,md)[2,7]
+b4 = BIC(md)
+
+me = lmer(logppm ~ source+bulk_purchase+Primary_Reason+ yqpt + USA_region + (1|state),data=gaba_model)
+p5 = anova(m2,me)[2,8]
+df5 = anova(m2,me)[2,7]
+b5 = BIC(me)
+
+m_inter = lmer(logppm~1+yqpt+log(mgstr_c)+ log(mgstr_c):yqpt+(1|state),data=gaba_model)
+p6 = anova(m_n1,m_inter)[2,8]
+df6 = anova(m_n1,m_inter)[2,7]
+b6=BIC(m_inter)
+
+d_f = data.frame(Variable = c("USA_region","Source","Bulk Purchase","I(Policy)","log(Dosage Strength)","log(Dosage Strength):I(Policy)"),df = c(df1,df2,df3,df4,df5,df6),
+                 p_value = c(p1,p2,p3,p4,p5,p6),BIC = c(b1,b2,b3,b4,b5,b6), 
+                 "BIC(full)"=rep(bfull,6),"BIC(best)"=rep(b0,6))
+knitr::kable(d_f,caption = "Diagnosis Table for Potential Predictor")
+```
+
+#### Estimation and Inference
+
+Table 2 shows the estimations of our model parameters. Holding other factors consistant, the policy, which considering Gabapentine as a generic medicine, leads to a drop of the price. Specifically, we are 95% confident that after the policy takes effect nationalwide, the price is expected to decrease by around 30.5% to 59.9%. Increasing the dosage strength in mg per unit by 10%  will expect to decrease the price by 8.2% to 9.8%. It may because that as the dosage strength in mg increase, the size of tablet will decrease, which will decrease the cost of production which leading to the decrease of price.
+
+Additionally, we found that there is hetergenity across different states. We are 95% confident that the variance of logarithm of price among different states are around 0.038 to 0.201. But there are no significant heterogeneity across states.
+
+```{r,table2,warning=FALSE,fig.pos="h"}
+m_n0 = lmer(logppm~1+log(mgstr_c)+(1|state),data=gaba_model)
+p1 = anova(m_n0,m_n1)[2,8]
+m_n01 = lmer(logppm~1+yqpt+(1|state),data=gaba_model)
+p2 = anova(m_n01,m_n1)[2,8]
+m_n03 = lm(logppm~1+yqpt+log(mgstr_c),data=gaba_model)
+LR=2*(logLik(m_n1)-logLik(m_n03))
+a = 0.5*(1-pchisq(LR[1],1)+1-pchisq(LR[1],0))
+p3 = format(round(a, 8), nsmall = 8)
+var_name = c("policy","mgstr","random_intercept")
+df = c(1,1,1)
+p_value = c(p1,p2,p3)
+db = data.frame(variable = var_name,df = df, p_value = p_value)
+
+cf = confint(m_n1)[3:5,]
+fixCI = cbind(summary(m_n1)$coef[,1:2],cf)
+re=matrix(c(0.01514,1.20052,0.123,1.096),byrow=FALSE,nrow=2)
+re=cbind(re,confint(m_n1)[1:2,])
+fixCI=rbind(fixCI,re)%>%round(.,3)
+fixCI=cbind(fixCI,c("",5.432e-6,1.302e-83,1,""))
+rownames(fixCI)=c("Intercept","I(Policy)","log(Dosage Strength)","State","Residual")
+colnames(fixCI)=c(colnames(fixCI)[1:4],"p-value of LRT")
+knitr::kable(fixCI,caption = "Estimation and 95% Confidence Interval")
+
+
+#exp(c(-0.915,-0.365))-1
+#exp(log(1.1)*c(-1.086,-0.897))-1
+```
+
+We futher applied our model to rank states based on the price controling the policy and dosage effect. Table 3 and Table 4 that have the highest price per mg, and the lowest price per mg. Based on our prediction, Hawaii has the highest perice per mg, and Tennessee State has the lowest price per mg.\
+
+```{r,find top 5 high low states}
+preds = predictInterval(m_n1,newdata = gaba_model, n.sims = 999) %>% 
+        mutate(obs = gaba_model$logppm,
+               state = gaba_model$state,
+              region = gaba_model$USA_region)
+pred_state = preds %>% group_by(region,state) %>% 
+                  summarise(obs = median(obs)%>%exp(),
+                            fit = median(fit)%>%exp(),
+                            lwr = median(lwr)%>%exp(),
+                            upr = median(upr)%>%exp())
+t3=pred_state %>% arrange(fit) %>% head(5)
+colnames(t3)=c("Region","State","Observed Mean","Estimation","5% CI","95% CI")
+  knitr::kable(t3,digits = 3,caption = "Top 5 States with Lowest Average Price (Median)" )
+t4=pred_state %>% arrange(desc(fit)) %>% head(5) 
+colnames(t4)=c("Region","State","Observed Mean","Estimation","5% CI","95% CI")
+knitr::kable(t4,digits = 3,caption = "Top 5 States with Highest Average Price (Median)" )
+```
+
+
+#### Model Diagnosis 
+
+During the model comparision with other alternatives, our model has the lowest BIC, and each terms we included are statisitcally significant (p-value less than 0.005)\footnote{We include non-significant random effect term for we want to borrow information across states and make inference on states.}. From the residual plot (Figure \ref{fig:residualrp}), we found that all the residuals are normally distributed around zero.  From the qqplot as shown in Figure \ref{fig:residualqq}, the overall residuals satisfy the normal assumption and only several points at the tail are slightly violate the normal assumption. 
+
+```{r}
+#BIC(m_n1)
+m_n1=lmer(logppm~1+yqpt+log(mgstr_c)+(1|state),data=gaba_model) #best
+#par(mfrow = c(1, 3))
+#hist(resid(m_n1),main = "",xlab="Stardardized Residuals")
+```
+
+```{r, fig.cap="\\label{fig:residualrp} Residual Plot",fig.width=4.5, fig.height=3,fig.pos="h"}
+plot(m_n1,resid(.,scaled=TRUE)~fitted(.),abline=0,xlab="Fitted Values",ylab="Standardized Residuals")
+
+```
+
+```{r, fig.cap="\\label{fig:residualqq} QQ plot for Residuals",fig.width=4.5, fig.height=3,fig.pos="h"}
+qqmath(resid(m_n1),xlab="Quantiles of Normal Distribution",ylab="Stardardized Residuals")
+```
+
+
+
+
+#### Sensitivity Analysis
+
+We conducted sensitivity analysis to check the influence of the outliers\footnote{Defined as the data with logarithm of price outside 3.5 standard deviation from the mean.} and influential points\footnote{Defined as the data with cook distance greater than 4/$n$, where $n$ is the sample size.} on our model. Specifically, we compare the model estimation with or without outliers , then compare the the model estimation with or without influential points (excluding the outliers in the analysis). 
+
+Figure \ref{fig:cioutlier} shows the coefficients confidence intervals are similar, and only the intercept confidence interval are relatively different. Since we would like to focus on exploring the which factors will significantly affect the price and make inference based on the majority of data, we exclude the outliers.
+
+```{r outlier analysis, warning = FALSE, fig.cap="\\label{fig:outlier} residual plot with/without outliers ",fig.width=4.5,fig.height=3}
+# model without outlier
+m_n1clean=lmer(logppm~1+yqpt+log(mgstr_c)+(1|state),data=gaba_model1)
+fixCI1 = cbind(confint(m_n1)[3:5,],summary(m_n1)$coef[,1],outlier = "without outliers") 
+colnames(fixCI1)=c("conf.low","conf.high","estimate","outlier")
+fixCI1 = fixCI1 %>% as.data.frame() %>% mutate(variable = rownames(fixCI1))
+fixCI2 = cbind(confint(m_n1clean)[3:5,],summary(m_n1clean)$coef[,1],outlier = "with outliers")
+colnames(fixCI2)=c("conf.low","conf.high","estimate","outlier")
+fixCI2 = fixCI2 %>% as.data.frame() %>% mutate(variable = rownames(fixCI2))
+fixCI = rbind(fixCI1,fixCI2) %>% as.data.frame() %>% 
+  mutate(estimate = as.numeric(as.character(estimate)),
+         conf.low = as.numeric(as.character(conf.low)),
+         conf.high = as.numeric(as.character(conf.high)))
+
+```
+
+```{r, fig.cap="\\label{fig:cioutlier} confidence interval of fixed effects with/without outliers",fig.width=4.5,fig.height=3}
+ggplot(fixCI,aes(variable,estimate))+
+  geom_point(position=position_dodge(width=0.5),aes(shape =outlier))+
+  geom_errorbar(position=position_dodge(width=0.5),aes(ymin=conf.low, ymax=conf.high,color = outlier))+
+  labs(title = "Confidence Interval with/without Outliers")+theme_bw()
+```
+
+
+Also, compared the two confidence intervals of coefficients as shown in Figure \ref{fig:ciip}, we did not found significant difference. So we decided to keep the influential points.
+
+```{r influential points,cache=TRUE, fig.cap="\\label{fig:influential} residual plot with/without influential points",fig.width=4.5,fig.height=3}
+library(influence.ME)
+m.inf=influence(m_n1,"state")
+#dfbetas(m.inf)
+m1.inf.indiv=influence(m_n1,obs=TRUE)
+m1.cook=cooks.distance(m1.inf.indiv)
+cook = which(m1.cook>4/length(gaba_model$logppm))
+gaba_model_outinf = gaba_model[-cook,]
+m_n1_outinf = lmer(logppm~1+yqpt+log(mgstr_c)+(1|state),data=gaba_model_outinf)
+fixCI1oi = cbind(confint(m_n1)[3:5,],summary(m_n1)$coef[,1],points = "original") 
+colnames(fixCI1oi)=c("conf.low","conf.high","estimate","points")
+fixCI1oi = fixCI1oi %>% as.data.frame() %>% mutate(variable = rownames(fixCI1oi))
+fixCI2oi = cbind(confint(m_n1_outinf)[3:5,],summary(m_n1_outinf)$coef[,1],points = "deleted")
+colnames(fixCI2oi)=c("conf.low","conf.high","estimate","points")
+fixCI2oi = fixCI2oi %>% as.data.frame() %>% mutate(variable = rownames(fixCI2oi))
+fixCIoi = rbind(fixCI1oi,fixCI2oi) %>% as.data.frame() %>% 
+  mutate(estimate = as.numeric(as.character(estimate)),
+         conf.low = as.numeric(as.character(conf.low)),
+         conf.high = as.numeric(as.character(conf.high)))
+```
+```{r, fig.cap="\\label{fig:ciip} confidence interval of fixed effects with/without influential points",fig.width=4.5,fig.height=3}
+ggplot(fixCIoi,aes(variable,estimate))+
+  geom_point(position=position_dodge(width=0.5),aes(shape =points))+
+  geom_errorbar(position=position_dodge(width=0.5),aes(ymin=conf.low, ymax=conf.high,color = points))+ labs(title = "Confidence Interval with/without influential points")+theme_bw()
+```
+
+
+#### Conclusion
+
+Our results can fit the data well as shown by model diagnosis and comparison among other possible models. 
+
+Furthermore, our model can be perfectly explained from supply and demand aspect in economics. After FDA consider Gabapentine as a generic medication in the United States, the supply of Gabapentine increase leading to a drop of the price on streets. Such policy is effective for the whole country; therefore, it does not show significant heterogeneous effect across distinct states. After the approval of FDA, Gabapentine is listed as one of the most popular prescripted medications,which ensures the supply on the streets market. As a result, the price of Gabapentine is relatively stable over time. Since the price depends on the supply and demand balance, the primary reason of buyer, the source of information, bulk purchase do not have significant connection to supply and demand on streets market, resulting in insignificant effects on the drug price. In addition, the convenience of transportation across states and especially the emerging Internet pharmarcy, the streets market in distint states can be considered as connected nationalwide, leading to insignificant heterogeneity across states. 
+
+It is worth noting that our model suggest increasing dosage strength in mg per unit makes negative effect on drug price, which may be explained by the cost-effectiveness from a producer's aspect. A increase in dosage strength in mg per unit may lead to a smaller size drug per unit, which may have less cost for producer.
+
+Further improvements can be done to better model the tail behavior. In our model, we assume a normal distribution for the error term and delete the samples with the price 3.5 standard deviation away from the mean. The sensitivity analysis shows there exists slight difference between the intercept estimation of our model. A heavy tailed t distribution on the error term may be an alternative chioce if we want to emphasize the tail behavior of the dataset.
+
+#### Appendix
+
+```{r, message=FALSE, fig.cap="\\label{fig:noeffect} EDA for Nonsignificant Variables",fig.pos="h"}
+ggplot(gaba_clean %>% dplyr::select(logppm,USA_region,source,bulk_purchase,
+                              Primary_Reason) %>% 
+          gather(key="predictor",value="value",-logppm), 
+   aes(x = value, y = logppm))+
+   geom_boxplot()+
+   facet_wrap(~predictor, scale = "free")+
+   labs(title = "EDA for nonsignificant variables")+theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#par(mfrow=c(1,3))
+#g1=plot(m_n1, main="without outliers")
+#g2=plot(m_n1clean,main="with outliers")
+#grid.arrange(g1,g2,ncol=2)
+```
+
+
